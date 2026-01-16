@@ -3,8 +3,9 @@
 Created on Thu Jan 14 2026
 @author: veroe
 
-Script pour utiliser le modèle Random Forest sur un texte manuscrit
-Classification lettre par lettre
+Random Forest Test Script: 
+Loads the model, processes test images via a CSV file, 
+and exports a comparison CSV (Image, Truth, Prediction).
 """
 
 import numpy as np
@@ -14,23 +15,34 @@ import joblib
 import csv
 
 # --------------------------------------------------
-# Charge model scaler
+# 1. Load Model and Scaler
 # --------------------------------------------------
-clf = joblib.load("random_forest_model.pkl")
-scaler = joblib.load("random_forest_scaler.pkl")
+MODEL_PATH = "random_forest_model.pkl"
+SCALER_PATH = "random_forest_scaler.pkl"
+
+if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
+    clf = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    print("Random Forest model and Scaler successfully loaded.")
+else:
+    print("Error: Model or Scaler file not found.")
+    exit()
 
 # --------------------------------------------------
-# 2. Fonction pour extraire les mêmes features qu'à l'entraînement
+# 2. Feature Extraction (18 features)
 # --------------------------------------------------
 def extract_handcrafted_features(img):
     """
-    img: image grayscale d'une lettre (taille arbitraire)
-    Retourne un vecteur de features compatible avec le modèle RF
+    Extract a fixed-length feature vector (18 features) 
+    compatible with the trained RF model.
     """
-    # Normalisation
+    if img is None:
+        return None
+
+    # Size normalization
     img = cv2.resize(img, (32, 32))
     
-    # Binarisation
+    # Binarization
     _, thresh = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -39,12 +51,12 @@ def extract_handcrafted_features(img):
     
     c = max(contours, key=cv2.contourArea)
     
-    # HU Moments
+    # Hu Moments (7 features)
     moments = cv2.moments(c)
     hu = cv2.HuMoments(moments).flatten()
     hu = -np.sign(hu) * np.log10(np.abs(hu) + 1e-10)
     
-    # Shape descriptors
+    # Shape descriptors (11 features)
     area = cv2.contourArea(c)
     perimeter = cv2.arcLength(c, True)
     (x, y, w, h) = cv2.boundingRect(c)
@@ -54,7 +66,7 @@ def extract_handcrafted_features(img):
     hull_area = cv2.contourArea(hull)
     solidity = area / hull_area if hull_area > 0 else 0.0
     circularity = 4 * np.pi * area / (perimeter ** 2) if perimeter > 0 else 0.0
-    (xc, yc), radius = cv2.minEnclosingCircle(c)
+    (_, _), radius = cv2.minEnclosingCircle(c)
     diameter = 2 * radius
     roundness = 4 * area / (np.pi * diameter ** 2) if diameter > 0 else 0.0
     
@@ -77,7 +89,7 @@ def extract_handcrafted_features(img):
     curvature_mean = np.mean(curvature)
     curvature_std = np.std(curvature)
     
-    # Feature vector
+    # Final Vector
     feature_vector = np.concatenate([
         hu,
         np.array([area, perimeter, circularity, roundness,
@@ -88,33 +100,63 @@ def extract_handcrafted_features(img):
     return feature_vector
 
 # --------------------------------------------------
-# Charge images in separated files
+# 3. Paths and Files
 # --------------------------------------------------
-TEXT_DIR = os.path.join(os.path.dirname(__file__), "data/dataset/test")  # dossier images lettres
-letters_files = sorted([f for f in os.listdir(TEXT_DIR) if f.endswith(".png")])
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Input CSV with ground truth (path, label)
+INPUT_TEST_CSV = os.path.join(BASE_DIR, "test_labels.csv")
+# Output CSV (image_name, label, predicted_label)
+OUTPUT_PRED_CSV = "random_forest_predictions.csv"
 
 # --------------------------------------------------
-# Character reco
+# 4. Processing and Prediction
 # --------------------------------------------------
-output_csv = "random_forest_predictions.csv"
-recognized_labels = []
+results = []
+correct_count = 0
 
-with open(output_csv, mode="w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    writer.writerow(["image_name", "predicted_label"])
+if not os.path.exists(INPUT_TEST_CSV):
+    print(f"Error: Input CSV not found at {INPUT_TEST_CSV}")
+    exit()
 
-    for f in letters_files:
-        img_path = os.path.join(TEXT_DIR, f)
+print("Processing test images...")
+
+
+
+with open(INPUT_TEST_CSV, mode='r', encoding='utf-8') as f_in:
+    reader = csv.DictReader(f_in)
+    for row in reader:
+        img_path = row['path'].replace('\\', '/')
+        true_label = row['label'].strip()
+        image_name = os.path.basename(img_path)
+
+        # Load image in grayscale
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         feat = extract_handcrafted_features(img)
 
         if feat is not None:
-            feat_scaled = scaler.transform([feat])  # normalisation
-            pred_label = clf.predict(feat_scaled)[0]  # class prediction
+            # Scale and Predict
+            feat_scaled = scaler.transform([feat])
+            pred_label = clf.predict(feat_scaled)[0]
         else:
-            pred_label += "?"  # no possible reco
+            pred_label = "?"
 
-        writer.writerow([f, pred_label])
-        recognized_labels.append(pred_label)
+        results.append([image_name, true_label, pred_label])
+        if pred_label == true_label:
+            correct_count += 1
 
-    
+# --------------------------------------------------
+# 5. Export and Summary
+# --------------------------------------------------
+with open(OUTPUT_PRED_CSV, mode="w", newline="", encoding="utf-8") as f_out:
+    writer = csv.writer(f_out)
+    writer.writerow(["image_name", "label", "predicted_label"])
+    writer.writerows(results)
+
+total = len(results)
+accuracy = (correct_count / total) * 100 if total > 0 else 0
+
+print("-" * 40)
+print(f"Predictions saved to: {OUTPUT_PRED_CSV}")
+print(f"Correct predictions: {correct_count} / {total}")
+print(f"Accuracy: {accuracy:.2f}%")
+print("-" * 40)

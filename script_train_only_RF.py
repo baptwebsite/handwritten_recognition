@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
+"""
+Train a Random Forest classifier for handwritten character recognition.
+Features: 18 (7 Hu Moments + 11 Shape/Gradient/Curvature descriptors).
+"""
+
 import numpy as np
 import os
 import cv2
 import csv
 import joblib
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix, ConfusionMatrixDisplay
 
 # --------------------------------------------------
-# Feature extraction function (MODIFIED TO 18 FEATURES)
+# Feature extraction function (18 features)
 # --------------------------------------------------
 def extract_handcrafted_features(img):
-    """
-    Extract a fixed-length feature vector (18 features):
-    7 Hu Moments + 11 Shape/Gradient/Curvature descriptors.
-    """
     if img is None:
         return None
 
@@ -28,13 +32,12 @@ def extract_handcrafted_features(img):
     if len(contours) == 0:
         return None
 
-    # Keep the largest connected component
     c = max(contours, key=cv2.contourArea)
 
-    # --- NOURVEAUTÉ : HU MOMENTS (7 features) ---
+    # --- HU MOMENTS (7 features) ---
     moments = cv2.moments(c)
     hu = cv2.HuMoments(moments).flatten()
-    # Log transformation pour stabiliser les valeurs (incontournable pour Hu)
+    # Log transformation to stabilize values
     hu = -np.sign(hu) * np.log10(np.abs(hu) + 1e-10)
 
     # --- SHAPE DESCRIPTORS (11 features) ---
@@ -72,8 +75,8 @@ def extract_handcrafted_features(img):
     curvature_mean = np.mean(curvature)
     curvature_std = np.std(curvature)
 
-    # --- FINAL VECTOR CONCATENATION (7 + 11 = 18) ---
-    feature_vector = np.concatenate([
+    # Concatenate all features (7 + 11 = 18)
+    return np.concatenate([
         hu, 
         np.array([
             area, perimeter, circularity, roundness,
@@ -82,28 +85,27 @@ def extract_handcrafted_features(img):
         ])
     ])
 
-    return feature_vector
 # --------------------------------------------------
-# Paths and data loading
+# Paths and Data Loading
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Note : Vérifiez que votre CSV contient bien les chemins complets ou relatifs corrects
-CSV_PATH = os.path.join(BASE_DIR, "data/dataset/dataset_labels.csv")
+CSV_PATH = os.path.join(BASE_DIR, "dataset_labels.csv")
 
 features = []
 labels = []
 
+print("Extracting features from dataset...")
+
 if not os.path.exists(CSV_PATH):
-    print(f"Erreur: {CSV_PATH} introuvable.")
+    print(f"Error: {CSV_PATH} not found.")
 else:
     with open(CSV_PATH, newline='', encoding='utf-8') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            img_path = row["path"].replace('\\', '/') 
+            img_path = row["path"].replace('\\', '/')
             label = row['label'].strip()
 
             if not os.path.exists(img_path):
-                print(f"Image manquante : {img_path}") # Debug
                 continue
 
             img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
@@ -113,42 +115,66 @@ else:
                 features.append(feat)
                 labels.append(label)
 
-# --------------------------------------------------
-# Vérification AVANT conversion
-# --------------------------------------------------
 if len(features) == 0:
-    print("ERREUR : Aucune caractéristique n'a été extraite. Vérifiez vos chemins d'images.")
+    print("CRITICAL ERROR: No features extracted. Check image paths.")
 else:
-    # Convert to NumPy arrays
     X = np.array(features)
     y = np.array(labels)
 
-    # Si X est 1D (un seul échantillon), on le force en 2D
-    if X.ndim == 1:
-        X = X.reshape(1, -1)
-
-    print(f"Feature matrix shape: {X.shape}")
+    # --------------------------------------------------
+    # Train/Test Split (80% Train, 20% Test)
+    # --------------------------------------------------
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.20, random_state=42, stratify=y
+    )
 
     # --------------------------------------------------
-    # Normalization & Training
+    # Normalization
     # --------------------------------------------------
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
 
+    # --------------------------------------------------
+    # Training Random Forest
+    # --------------------------------------------------
+    print("Training Random Forest model...")
     clf = RandomForestClassifier(
         n_estimators=300,
-        max_depth=10,
+        max_depth=15,
         min_samples_leaf=2,
         class_weight="balanced",
         random_state=42
     )
-
-    clf.fit(X_scaled, y)
+    clf.fit(X_train_scaled, y_train)
 
     # --------------------------------------------------
-    # Save
+    # Evaluation
+    # --------------------------------------------------
+    y_pred = clf.predict(X_test_scaled)
+    
+    print("\n" + "="*30)
+    print(f"OVERALL ACCURACY: {accuracy_score(y_test, y_pred) * 100:.2f}%")
+    print("="*30)
+    print("\nDetailed Classification Report:\n", classification_report(y_test, y_pred))
+
+    # --------------------------------------------------
+    # Confusion Matrix Visualization
+    # --------------------------------------------------
+    fig, ax = plt.subplots(figsize=(12, 10))
+    disp = ConfusionMatrixDisplay.from_predictions(
+        y_test, y_pred, 
+        display_labels=clf.classes_, 
+        cmap='Greens', 
+        ax=ax, 
+        xticks_rotation='vertical'
+    )
+    plt.title("Random Forest Confusion Matrix")
+    plt.show()
+
+    # --------------------------------------------------
+    # Save Model & Scaler
     # --------------------------------------------------
     joblib.dump(clf, "random_forest_model.pkl")
     joblib.dump(scaler, "random_forest_scaler.pkl")
-
-    print("Modèle et Scaler sauvegardés avec succès.")
+    print("\nRandom Forest model and Scaler saved successfully.")
