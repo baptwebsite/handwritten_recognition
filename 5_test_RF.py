@@ -1,11 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Jan 16 2026
-@author: Gemini & Veroe
-
-Final Evaluation Script: Confusion Matrix on the Stratified Test Set.
-This script reproduces the exact 20% test split used during training.
-"""
 
 import numpy as np
 import os
